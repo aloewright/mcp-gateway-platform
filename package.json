@@ -1,0 +1,16 @@
+{
+  "name": "mcp-gateway-platform",
+  "private": true,
+  "scripts": {
+    "dev:gateway": "pnpm --filter gateway dev",
+    "dev:profiles": "pnpm --filter profiles dev",
+    "deploy:gateway": "pnpm --filter gateway deploy",
+    "deploy:profiles": "pnpm --filter profiles deploy",
+    "deploy": "pnpm deploy:gateway && pnpm deploy:profiles"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3",
+    "wrangler": "^3.99.0"
+  },
+  "packageManager": "pnpm@9.15.0"
+}

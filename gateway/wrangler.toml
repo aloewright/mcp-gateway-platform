@@ -1,0 +1,33 @@
+name = "mcp-gateway"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Custom domain
+routes = [
+  { pattern = "api.makethe.app", custom_domain = true }
+]
+
+# D1 Database binding
+[[d1_databases]]
+binding = "DB"
+database_name = "mcp-gateway-db"
+database_id = "e05d0d8f-7ffe-4f7d-9a25-bfc3e813c3ba"
+
+# R2 bucket bindings
+[[r2_buckets]]
+binding = "TRACES"
+bucket_name = "mcp-traces"
+
+[[r2_buckets]]
+binding = "ASSETS"
+bucket_name = "user-assets"
+
+# Analytics Engine binding
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "mcp_gateway_analytics"
+
+# Environment variables
+[vars]
+ENVIRONMENT = "production"

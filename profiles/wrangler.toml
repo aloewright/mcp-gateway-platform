@@ -1,0 +1,10 @@
+name = "mcp-profiles"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+pages_build_output_dir = ".vercel/output/static"
+
+# Custom domain for profiles
+# routes = [
+#   { pattern = "makethe.app", custom_domain = true },
+#   { pattern = "*.makethe.app", custom_domain = true }
+# ]
