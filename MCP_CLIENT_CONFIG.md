@@ -2,16 +2,43 @@
 
 This document explains how to configure MCP clients (like Claude Desktop) to connect to the MCP Gateway Platform.
 
-## SSE Transport Configuration
+## Important: SSE Transport Limitation
 
-The MCP Gateway Platform uses Server-Sent Events (SSE) for transport. To connect, you need:
+⚠️ **Claude Desktop does NOT support SSE transport via the config file.** The `claude_desktop_config.json` file only supports stdio-based servers.
 
-1. An API key from https://api.makethe.app
-2. The correct client configuration
+For remote SSE servers, you have two options:
 
-### Claude Desktop Configuration
+1. **[RECOMMENDED] Use Claude Desktop's Native UI** (requires Pro/Team/Enterprise plan)
+2. **Use a stdio-to-SSE proxy** (works with all plans)
 
-Add this to your Claude Desktop configuration file:
+---
+
+## Option 1: Native Claude Desktop Connector (RECOMMENDED)
+
+This is the officially supported method for Claude Desktop Pro, Team, and Enterprise users.
+
+### Steps:
+
+1. Open **Claude Desktop**
+2. Go to **Settings > Connectors** (or **Settings > Custom integrations** on some versions)
+3. Click **Add connector**
+4. Enter your connection details:
+   - **Name**: `MCP Gateway`
+   - **URL**: `https://api.makethe.app/sse?api_key=YOUR_API_KEY_HERE`
+5. Click **Save**
+
+Replace `YOUR_API_KEY_HERE` with your actual API key (starts with `mk_`).
+
+### Requirements:
+- Claude Desktop Pro, Team, or Enterprise plan
+- HTTPS endpoint (✅ already configured at `api.makethe.app`)
+- Valid API key from https://makethe.app
+
+---
+
+## Option 2: stdio Proxy (For Free/Config File Users)
+
+If you want to use the config file approach or don't have a Pro plan, you can use the `mcp-remote` proxy package:
 
 **Location:**
 - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
@@ -27,7 +54,7 @@ Add this to your Claude Desktop configuration file:
       "command": "npx",
       "args": [
         "-y",
-        "@modelcontextprotocol/server-remote",
+        "mcp-remote",
         "https://api.makethe.app/sse?api_key=YOUR_API_KEY_HERE"
       ]
     }
@@ -37,9 +64,7 @@ Add this to your Claude Desktop configuration file:
 
 Replace `YOUR_API_KEY_HERE` with your actual API key (starts with `mk_`).
 
-### Alternative: Using Environment Variables
-
-For better security, you can use environment variables:
+### With Environment Variables (More Secure):
 
 ```json
 {
@@ -48,11 +73,10 @@ For better security, you can use environment variables:
       "command": "npx",
       "args": [
         "-y",
-        "@modelcontextprotocol/server-remote",
-        "https://api.makethe.app/sse?api_key=${MCP_GATEWAY_API_KEY}"
+        "mcp-remote"
       ],
       "env": {
-        "MCP_GATEWAY_API_KEY": "your_api_key_here"
+        "MCP_REMOTE_URL": "https://api.makethe.app/sse?api_key=YOUR_API_KEY_HERE"
       }
     }
   }
@@ -74,18 +98,29 @@ Once connected, the gateway provides these MCP tools:
 
 ## Troubleshooting
 
+### "Failed to initialize client" Error
+
+This error typically means you're trying to use SSE transport via the config file, which isn't supported. Solutions:
+
+1. **Use Option 1 above**: Add the connector via Claude Desktop's UI (Settings > Connectors)
+2. **Use Option 2 above**: Use the `mcp-remote` proxy package (NOT `@modelcontextprotocol/server-remote`)
+3. **Verify package name**: The package is `mcp-remote` (without @ prefix)
+4. **Check Node.js**: Ensure you have Node.js 18+ installed (`node --version`)
+
 ### Connection Issues
 
 If you can't connect:
 
 1. **Check API key**: Ensure your API key is valid and starts with `mk_`
-2. **Check URL**: The SSE endpoint is `https://api.makethe.app/sse`
-3. **Check package**: The package `@modelcontextprotocol/server-remote` must be available
+2. **Check URL format**: Must be `https://api.makethe.app/sse?api_key=YOUR_KEY`
+3. **Check HTTPS**: Claude Desktop requires HTTPS for remote connectors (localhost HTTP won't work)
+4. **Restart Claude Desktop**: After config changes, completely quit and restart the app
 
 ### Authentication Errors
 
-- Error 401: Invalid or missing API key
-- Error 404: Session not found (connection may have expired)
+- **401 Unauthorized**: Invalid or missing API key - verify your key at https://makethe.app
+- **404 Session not found**: Connection expired - reconnect to establish a new session
+- **403 Forbidden**: CORS or security issue - ensure you're using the correct URL format
 
 ### Testing Connection
 
