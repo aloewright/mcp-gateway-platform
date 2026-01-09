@@ -75,6 +75,22 @@ CREATE TABLE IF NOT EXISTS traces (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- MCP Servers registry
+CREATE TABLE IF NOT EXISTS mcp_servers (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  transport_type TEXT NOT NULL CHECK(transport_type IN ('sse', 'stdio', 'http')),
+  endpoint_url TEXT,
+  command TEXT,
+  args TEXT,
+  env_vars TEXT,
+  is_active INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
 -- Create indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id);
 CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
@@ -83,3 +99,4 @@ CREATE INDEX IF NOT EXISTS idx_traces_user_id ON traces(user_id);
 CREATE INDEX IF NOT EXISTS idx_traces_created_at ON traces(created_at);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_custom_domain ON users(custom_domain);
+CREATE INDEX IF NOT EXISTS idx_mcp_servers_user_id ON mcp_servers(user_id);

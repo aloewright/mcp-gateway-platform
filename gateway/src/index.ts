@@ -325,6 +325,49 @@ async function handleToolCall(
         break
       }
 
+      case 'list_mcp_servers': {
+        const servers = await env.DB.prepare(
+          'SELECT * FROM mcp_servers WHERE user_id = ? ORDER BY created_at DESC'
+        ).bind(userId).all()
+        result = { servers: servers.results }
+        break
+      }
+
+      case 'create_mcp_server': {
+        const mcpServerId = crypto.randomUUID()
+        await env.DB.prepare(
+          `INSERT INTO mcp_servers (id, user_id, name, description, transport_type,
+           endpoint_url, command, args, env_vars, is_active)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).bind(
+          mcpServerId,
+          userId,
+          args.name as string,
+          (args.description as string) || null,
+          args.transport_type as string,
+          (args.endpoint_url as string) || null,
+          (args.command as string) || null,
+          args.args ? JSON.stringify(args.args) : null,
+          args.env_vars ? JSON.stringify(args.env_vars) : null,
+          args.is_active !== undefined ? (args.is_active ? 1 : 0) : 1
+        ).run()
+        result = {
+          id: mcpServerId,
+          name: args.name,
+          transport_type: args.transport_type,
+          is_active: args.is_active !== undefined ? args.is_active : true
+        }
+        break
+      }
+
+      case 'delete_mcp_server': {
+        await env.DB.prepare(
+          'DELETE FROM mcp_servers WHERE id = ? AND user_id = ?'
+        ).bind(args.server_id as string, userId).run()
+        result = { success: true, deleted_id: args.server_id }
+        break
+      }
+
       default:
         return createErrorResponse(id, -32601, `Unknown tool: ${toolName}`)
     }
@@ -572,16 +615,173 @@ app.post('/v1/assets/:type', authMiddleware, async (c) => {
   const userId = c.get('userId')!
   const type = c.req.param('type')
   const file = await c.req.blob()
-  
+
   const id = crypto.randomUUID()
   const path = `${type}/${userId}/${id}`
-  
+
   await c.env.ASSETS.put(path, file)
-  
-  return c.json({ 
-    path, 
-    url: `https://assets.makethe.app/${path}` 
+
+  return c.json({
+    path,
+    url: `https://assets.makethe.app/${path}`
   }, 201)
+})
+
+// ============ MCP Server Management Routes ============
+
+// List MCP servers
+app.get('/v1/mcp-servers', authMiddleware, async (c) => {
+  const userId = c.get('userId')!
+
+  const servers = await c.env.DB.prepare(
+    'SELECT * FROM mcp_servers WHERE user_id = ? ORDER BY created_at DESC'
+  ).bind(userId).all()
+
+  return c.json({ servers: servers.results })
+})
+
+// Get a specific MCP server
+app.get('/v1/mcp-servers/:id', authMiddleware, async (c) => {
+  const userId = c.get('userId')!
+  const serverId = c.req.param('id')
+
+  const server = await c.env.DB.prepare(
+    'SELECT * FROM mcp_servers WHERE id = ? AND user_id = ?'
+  ).bind(serverId, userId).first()
+
+  if (!server) {
+    return c.json({ error: 'MCP server not found' }, 404)
+  }
+
+  return c.json({ server })
+})
+
+// Create a new MCP server
+app.post('/v1/mcp-servers', authMiddleware, async (c) => {
+  const userId = c.get('userId')!
+  const body = await c.req.json()
+
+  // Validate transport type
+  const validTransports = ['sse', 'stdio', 'http']
+  if (!validTransports.includes(body.transport_type)) {
+    return c.json({
+      error: 'Invalid transport type. Must be one of: sse, stdio, http'
+    }, 400)
+  }
+
+  // Validate required fields based on transport type
+  if (body.transport_type === 'sse' || body.transport_type === 'http') {
+    if (!body.endpoint_url) {
+      return c.json({ error: 'endpoint_url is required for SSE and HTTP transports' }, 400)
+    }
+  }
+
+  if (body.transport_type === 'stdio') {
+    if (!body.command) {
+      return c.json({ error: 'command is required for stdio transport' }, 400)
+    }
+  }
+
+  const id = crypto.randomUUID()
+
+  await c.env.DB.prepare(
+    `INSERT INTO mcp_servers (id, user_id, name, description, transport_type,
+     endpoint_url, command, args, env_vars, is_active)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    id,
+    userId,
+    body.name,
+    body.description || null,
+    body.transport_type,
+    body.endpoint_url || null,
+    body.command || null,
+    body.args ? JSON.stringify(body.args) : null,
+    body.env_vars ? JSON.stringify(body.env_vars) : null,
+    body.is_active !== undefined ? (body.is_active ? 1 : 0) : 1
+  ).run()
+
+  return c.json({
+    id,
+    name: body.name,
+    transport_type: body.transport_type,
+    is_active: body.is_active !== undefined ? body.is_active : true
+  }, 201)
+})
+
+// Update an MCP server
+app.put('/v1/mcp-servers/:id', authMiddleware, async (c) => {
+  const userId = c.get('userId')!
+  const serverId = c.req.param('id')
+  const body = await c.req.json()
+
+  // Check if server exists and belongs to user
+  const existing = await c.env.DB.prepare(
+    'SELECT id FROM mcp_servers WHERE id = ? AND user_id = ?'
+  ).bind(serverId, userId).first()
+
+  if (!existing) {
+    return c.json({ error: 'MCP server not found' }, 404)
+  }
+
+  // Build update query dynamically
+  const updates: string[] = []
+  const values: any[] = []
+
+  if (body.name !== undefined) {
+    updates.push('name = ?')
+    values.push(body.name)
+  }
+  if (body.description !== undefined) {
+    updates.push('description = ?')
+    values.push(body.description)
+  }
+  if (body.transport_type !== undefined) {
+    updates.push('transport_type = ?')
+    values.push(body.transport_type)
+  }
+  if (body.endpoint_url !== undefined) {
+    updates.push('endpoint_url = ?')
+    values.push(body.endpoint_url)
+  }
+  if (body.command !== undefined) {
+    updates.push('command = ?')
+    values.push(body.command)
+  }
+  if (body.args !== undefined) {
+    updates.push('args = ?')
+    values.push(JSON.stringify(body.args))
+  }
+  if (body.env_vars !== undefined) {
+    updates.push('env_vars = ?')
+    values.push(JSON.stringify(body.env_vars))
+  }
+  if (body.is_active !== undefined) {
+    updates.push('is_active = ?')
+    values.push(body.is_active ? 1 : 0)
+  }
+
+  updates.push("updated_at = datetime('now')")
+
+  if (updates.length > 0) {
+    await c.env.DB.prepare(
+      `UPDATE mcp_servers SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`
+    ).bind(...values, serverId, userId).run()
+  }
+
+  return c.json({ success: true })
+})
+
+// Delete an MCP server
+app.delete('/v1/mcp-servers/:id', authMiddleware, async (c) => {
+  const userId = c.get('userId')!
+  const serverId = c.req.param('id')
+
+  await c.env.DB.prepare(
+    'DELETE FROM mcp_servers WHERE id = ? AND user_id = ?'
+  ).bind(serverId, userId).run()
+
+  return c.json({ success: true })
 })
 
 export default app

@@ -119,6 +119,43 @@ export const GATEWAY_TOOLS: MCPTool[] = [
       required: ['messages'],
     },
   },
+  {
+    name: 'list_mcp_servers',
+    description: 'List all configured MCP servers for the authenticated user',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'create_mcp_server',
+    description: 'Register a new MCP server configuration',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Name of the MCP server' },
+        description: { type: 'string', description: 'Description of the MCP server' },
+        transport_type: { type: 'string', enum: ['sse', 'stdio', 'http'], description: 'Transport type' },
+        endpoint_url: { type: 'string', description: 'Endpoint URL (for SSE/HTTP transports)' },
+        command: { type: 'string', description: 'Command to execute (for stdio transport)' },
+        args: { type: 'array', items: { type: 'string' }, description: 'Command arguments (for stdio transport)' },
+        env_vars: { type: 'object', description: 'Environment variables' },
+        is_active: { type: 'boolean', description: 'Whether the server is active' },
+      },
+      required: ['name', 'transport_type'],
+    },
+  },
+  {
+    name: 'delete_mcp_server',
+    description: 'Delete an MCP server configuration',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        server_id: { type: 'string', description: 'ID of the MCP server to delete' },
+      },
+      required: ['server_id'],
+    },
+  },
 ]
 
 export function createInitializeResponse(id: string | number): MCPMessage {
