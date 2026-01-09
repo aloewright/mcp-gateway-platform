@@ -5,8 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:pages": "npx @cloudflare/next-on-pages",
     "start": "next start",
-    "deploy": "npx @cloudflare/next-on-pages && wrangler pages deploy .vercel/output/static"
+    "deploy": "npm run build:pages && wrangler pages deploy .vercel/output/static --project-name=mcp-profiles"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.0",
