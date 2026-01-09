@@ -1,9 +1,18 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
+import { streamSSE } from 'hono/streaming'
 import { createTraceContext, extractTraceHeaders, TraceContext } from './trace'
 import { routeModelRequest, ModelRequest } from './routing'
 import { writeAnalyticsEvent } from './analytics'
+import {
+  MCPMessage,
+  GATEWAY_TOOLS,
+  createInitializeResponse,
+  createToolsListResponse,
+  createErrorResponse,
+  createToolResultResponse,
+} from './mcp'
 
 type Bindings = {
   DB: D1Database
@@ -80,6 +89,255 @@ app.get('/', (c) => {
 })
 
 app.get('/health', (c) => c.json({ status: 'healthy' }))
+
+// ============ MCP SSE Transport ============
+
+// Store for active SSE connections and their message queues
+const sseConnections = new Map<string, {
+  userId: string
+  sendMessage: (msg: MCPMessage) => void
+}>()
+
+// SSE endpoint - establishes connection and sends endpoint info
+app.get('/sse', async (c) => {
+  // Auth via query param for SSE (can't use headers easily)
+  const apiKey = c.req.query('api_key')
+  if (!apiKey) {
+    return c.json({ error: 'API key required as query parameter' }, 401)
+  }
+
+  const keyPrefix = apiKey.slice(0, 8)
+  const encoder = new TextEncoder()
+  const data = encoder.encode(apiKey)
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+  const hashArray = Array.from(new Uint8Array(hashBuffer))
+  const keyHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+
+  const result = await c.env.DB.prepare(
+    'SELECT user_id FROM api_keys WHERE key_prefix = ? AND key_hash = ?'
+  ).bind(keyPrefix, keyHash).first()
+
+  if (!result) {
+    return c.json({ error: 'Invalid API key' }, 401)
+  }
+
+  const userId = result.user_id as string
+  const sessionId = crypto.randomUUID()
+
+  return streamSSE(c, async (stream) => {
+    // Send endpoint message first
+    const endpointMsg = {
+      jsonrpc: '2.0',
+      method: 'endpoint',
+      params: {
+        endpoint: `https://api.makethe.app/message?session_id=${sessionId}`,
+      },
+    }
+    await stream.writeSSE({ data: JSON.stringify(endpointMsg) })
+
+    // Register connection
+    sseConnections.set(sessionId, {
+      userId,
+      sendMessage: async (msg: MCPMessage) => {
+        await stream.writeSSE({ data: JSON.stringify(msg) })
+      },
+    })
+
+    // Keep connection alive
+    const keepAlive = setInterval(async () => {
+      try {
+        await stream.writeSSE({ data: '' })
+      } catch {
+        clearInterval(keepAlive)
+      }
+    }, 30000)
+
+    // Wait for abort
+    stream.onAbort(() => {
+      clearInterval(keepAlive)
+      sseConnections.delete(sessionId)
+    })
+
+    // Keep stream open
+    await new Promise(() => {})
+  })
+})
+
+// Message endpoint - receives JSON-RPC messages from client
+app.post('/message', async (c) => {
+  const sessionId = c.req.query('session_id')
+  if (!sessionId) {
+    return c.json({ error: 'session_id required' }, 400)
+  }
+
+  const connection = sseConnections.get(sessionId)
+  if (!connection) {
+    return c.json({ error: 'Session not found or expired' }, 404)
+  }
+
+  const message = await c.req.json() as MCPMessage
+  const { userId, sendMessage } = connection
+
+  try {
+    let response: MCPMessage
+
+    switch (message.method) {
+      case 'initialize':
+        response = createInitializeResponse(message.id!)
+        break
+
+      case 'initialized':
+        // No response needed for notification
+        return c.json({ ok: true })
+
+      case 'tools/list':
+        response = createToolsListResponse(message.id!)
+        break
+
+      case 'tools/call':
+        const toolName = (message.params as any)?.name
+        const toolArgs = (message.params as any)?.arguments || {}
+        response = await handleToolCall(userId, toolName, toolArgs, message.id!, c.env)
+        break
+
+      case 'ping':
+        response = { jsonrpc: '2.0', id: message.id, result: {} }
+        break
+
+      default:
+        response = createErrorResponse(message.id ?? null, -32601, `Method not found: ${message.method}`)
+    }
+
+    // Send response via SSE
+    await sendMessage(response)
+    return c.json({ ok: true })
+  } catch (error) {
+    const errorResponse = createErrorResponse(
+      message.id ?? null,
+      -32603,
+      error instanceof Error ? error.message : 'Internal error'
+    )
+    await sendMessage(errorResponse)
+    return c.json({ ok: true })
+  }
+})
+
+// Handle tool calls
+async function handleToolCall(
+  userId: string,
+  toolName: string,
+  args: Record<string, unknown>,
+  id: string | number,
+  env: any
+): Promise<MCPMessage> {
+  try {
+    let result: unknown
+
+    switch (toolName) {
+      case 'get_user_profile': {
+        const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(userId).first()
+        result = { user }
+        break
+      }
+
+      case 'list_projects': {
+        const projects = await env.DB.prepare(
+          'SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC'
+        ).bind(userId).all()
+        result = { projects: projects.results }
+        break
+      }
+
+      case 'create_project': {
+        const projectId = crypto.randomUUID()
+        await env.DB.prepare(
+          'INSERT INTO projects (id, user_id, name, description, is_public) VALUES (?, ?, ?, ?, ?)'
+        ).bind(
+          projectId,
+          userId,
+          args.name as string,
+          (args.description as string) || null,
+          args.is_public ? 1 : 0
+        ).run()
+        result = { id: projectId, name: args.name, description: args.description }
+        break
+      }
+
+      case 'get_usage': {
+        const budget = await env.DB.prepare('SELECT * FROM cost_budgets WHERE user_id = ?').bind(userId).first()
+        const traces = await env.DB.prepare(
+          `SELECT tool_name, model, SUM(tokens_in) as total_tokens_in, SUM(tokens_out) as total_tokens_out, 
+           SUM(cost_cents) as total_cost, COUNT(*) as request_count
+           FROM traces WHERE user_id = ? AND created_at > datetime('now', '-30 days')
+           GROUP BY tool_name, model`
+        ).bind(userId).all()
+        result = { budget, usage: traces.results }
+        break
+      }
+
+      case 'list_api_keys': {
+        const keys = await env.DB.prepare(
+          'SELECT id, name, key_prefix, last_used_at, expires_at, created_at FROM api_keys WHERE user_id = ?'
+        ).bind(userId).all()
+        result = { keys: keys.results }
+        break
+      }
+
+      case 'create_api_key': {
+        const keyId = crypto.randomUUID()
+        const keyBytes = new Uint8Array(32)
+        crypto.getRandomValues(keyBytes)
+        const apiKey = 'mk_' + Array.from(keyBytes).map(b => b.toString(16).padStart(2, '0')).join('')
+        const keyPrefix = apiKey.slice(0, 8)
+
+        const encoder = new TextEncoder()
+        const data = encoder.encode(apiKey)
+        const hashBuffer = await crypto.subtle.digest('SHA-256', data)
+        const hashArray = Array.from(new Uint8Array(hashBuffer))
+        const keyHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+
+        await env.DB.prepare(
+          'INSERT INTO api_keys (id, user_id, name, key_hash, key_prefix) VALUES (?, ?, ?, ?, ?)'
+        ).bind(keyId, userId, args.name as string, keyHash, keyPrefix).run()
+
+        result = { id: keyId, name: args.name, key: apiKey, key_prefix: keyPrefix }
+        break
+      }
+
+      case 'list_adapters': {
+        const adapters = await env.DB.prepare(
+          'SELECT * FROM lora_adapters WHERE user_id = ? ORDER BY created_at DESC'
+        ).bind(userId).all()
+        result = { adapters: adapters.results }
+        break
+      }
+
+      case 'route_model_request': {
+        const routingResult = await routeModelRequest(
+          args as ModelRequest,
+          userId,
+          env.DB
+        )
+        result = {
+          routing: routingResult,
+          note: 'This is routing metadata. Actual model calls should be made to the target endpoint.',
+        }
+        break
+      }
+
+      default:
+        return createErrorResponse(id, -32601, `Unknown tool: ${toolName}`)
+    }
+
+    return createToolResultResponse(id, result)
+  } catch (error) {
+    return createToolResultResponse(
+      id,
+      { error: error instanceof Error ? error.message : 'Tool execution failed' },
+      true
+    )
+  }
+}
 
 // ============ MCP Gateway Routes ============
 
