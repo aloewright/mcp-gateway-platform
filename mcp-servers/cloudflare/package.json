@@ -1,0 +1,29 @@
+{
+  "name": "cloudflare-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for managing Cloudflare Workers and Pages deployments",
+  "type": "module",
+  "main": "dist/server.js",
+  "bin": {
+    "cloudflare-mcp-server": "./dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/server.js"
+  },
+  "keywords": [
+    "mcp",
+    "cloudflare",
+    "workers",
+    "pages",
+    "deployment"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3"
+  }
+}
