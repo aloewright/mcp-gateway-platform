@@ -71,8 +71,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       
-      - name: Build Next.js
-        run: pnpm build
+      - name: Build for Cloudflare Pages (next-on-pages)
+        run: pnpm exec next-on-pages
         env:
           NEXT_PUBLIC_API_URL: https://api.makethe.app
       
@@ -83,4 +83,4 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: profiles
-          command: pages deploy out --project-name=mcp-profiles
+          command: pages deploy .vercel/output/static --project-name=mcp-profiles

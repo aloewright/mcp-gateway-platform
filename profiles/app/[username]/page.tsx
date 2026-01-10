@@ -34,9 +34,10 @@ async function getUser(username: string): Promise<{ user: User; projects: Projec
 export default async function UserProfilePage({
   params,
 }: {
-  params: { username: string }
+  params: Promise<{ username: string }>
 }) {
-  const data = await getUser(params.username)
+  const { username } = await params
+  const data = await getUser(username)
   
   if (!data) {
     notFound()
@@ -111,9 +112,10 @@ export default async function UserProfilePage({
 export async function generateMetadata({
   params,
 }: {
-  params: { username: string }
+  params: Promise<{ username: string }>
 }) {
-  const data = await getUser(params.username)
+  const { username } = await params
+  const data = await getUser(username)
   
   if (!data) {
     return {

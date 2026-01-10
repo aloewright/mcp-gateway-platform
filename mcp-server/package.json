@@ -1,0 +1,20 @@
+{
+  "name": "mcp-gateway-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MCP server (stdio) for the MakeThe.App gateway",
+  "main": "index.js",
+  "bin": {
+    "mcp-gateway-server": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.25.0"
+  }
+}

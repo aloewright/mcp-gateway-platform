@@ -19,7 +19,8 @@ mcp-gateway-platform/
 │   ├── schema.sql     # D1 database schema
 │   └── wrangler.toml  # Worker configuration
 ├── profiles/          # Cloudflare Pages - User profiles & showcase
-│   └── app/           # Next.js 14 app router
+│   └── app/           # Next.js 15 app router
+├── mcp-server/        # Local MCP server (stdio) that calls the gateway API
 └── .github/workflows/ # CI/CD
 ```
 
@@ -77,6 +78,15 @@ pnpm dev
 
 # Deploy
 pnpm deploy
+```
+
+## MCP Server (stdio)
+
+This repo includes a local MCP server wrapper in `mcp-server/` that exposes the gateway API as MCP tools.
+
+```bash
+# Requires an API key created in the gateway
+MCP_GATEWAY_API_KEY="mk_..." pnpm dev:mcp-server
 ```
 
 ## Environment Variables

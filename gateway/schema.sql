@@ -83,3 +83,8 @@ CREATE INDEX IF NOT EXISTS idx_traces_user_id ON traces(user_id);
 CREATE INDEX IF NOT EXISTS idx_traces_created_at ON traces(created_at);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_custom_domain ON users(custom_domain);
+
+-- Normalize API key prefixes (historical bug stored longer prefixes)
+UPDATE api_keys
+SET key_prefix = substr(key_prefix, 1, 8)
+WHERE length(key_prefix) > 8;

@@ -494,7 +494,7 @@ app.post('/v1/api-keys', authMiddleware, async (c) => {
   const keyBytes = new Uint8Array(32)
   crypto.getRandomValues(keyBytes)
   const apiKey = 'mk_' + Array.from(keyBytes).map(b => b.toString(16).padStart(2, '0')).join('')
-  const keyPrefix = apiKey.slice(0, 11)
+  const keyPrefix = apiKey.slice(0, 8)
   
   // Hash the key
   const encoder = new TextEncoder()
