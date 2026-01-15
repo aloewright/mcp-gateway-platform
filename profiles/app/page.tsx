@@ -9,15 +9,15 @@ export default function Home() {
               Build AI Apps with MCP
             </h1>
             <p className="text-xl md:text-2xl text-primary-100 mb-8 max-w-3xl mx-auto">
-              The gateway platform for Model Context Protocol. Route requests, track usage, 
+              The gateway platform for Model Context Protocol. Route requests, track usage,
               and deploy intelligent applications at scale.
             </p>
             <div className="flex justify-center space-x-4">
               <a
-                href="https://api.makethe.app/v1/docs"
+                href="/docs"
                 className="bg-white text-primary-600 px-8 py-3 rounded-lg font-semibold hover:bg-primary-50"
               >
-                View API Docs
+                View Docs
               </a>
               <a
                 href="/docs/quickstart"
@@ -78,15 +78,17 @@ export default function Home() {
             Ready to get started?
           </h2>
           <p className="text-gray-600 mb-8 max-w-2xl mx-auto">
-            Create your account and get an API key in minutes. 
-            Start building AI-powered applications today.
+            Create an account, get your API key, and start building.
           </p>
           <a
-            href="https://api.makethe.app/auth/signup"
+            href="/sign-up"
             className="bg-primary-600 text-white px-8 py-3 rounded-lg font-semibold hover:bg-primary-700"
           >
             Create Free Account
           </a>
+          <div className="mt-4 text-sm text-gray-600">
+            Already have an account? <a href="/sign-in" className="text-primary-700 hover:underline">Sign in</a>
+          </div>
         </div>
       </section>
     </div>

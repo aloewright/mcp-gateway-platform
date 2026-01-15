@@ -5,9 +5,11 @@
     "dev:gateway": "pnpm --filter gateway dev",
     "dev:profiles": "pnpm --filter profiles dev",
     "dev:mcp-server": "pnpm --filter mcp-gateway-server start",
-    "deploy:gateway": "pnpm --filter gateway deploy",
-    "deploy:profiles": "pnpm --filter profiles deploy",
-    "deploy": "pnpm deploy:gateway && pnpm deploy:profiles"
+    "deploy:gateway": "pnpm --filter gateway run db:migrate:remote && pnpm --filter gateway run deploy",
+    "deploy:profiles": "pnpm --filter profiles run deploy",
+    "deploy": "pnpm deploy:gateway && pnpm deploy:profiles",
+    "smoke:gateway": "node -e \"const base=process.env.MCP_GATEWAY_API_BASE||'https://api.makethe.app';fetch(base+'/health').then(r=>r.json()).then(console.log).catch(e=>{console.error(e);process.exit(1)})\"",
+    "test": "pnpm smoke:gateway && pnpm --filter profiles build"
   },
   "devDependencies": {
     "typescript": "^5.3.3",

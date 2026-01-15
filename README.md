@@ -95,6 +95,20 @@ For CI/CD, set these secrets in GitHub:
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_ACCOUNT_ID`
 
+For auth emails (profiles):
+- `RESEND_API_KEY`
+- `EMAIL_FROM` (e.g., `noreply@makethe.app`)
+- `EMAIL_FROM_NAME` (optional)
+
+## Provider Proxying (Planned)
+
+`/v1/mcp/:tool` currently returns routing metadata only. The planned provider proxying flow is:
+1. Resolve provider + model from `routing.ts` (OpenAI, Anthropic, Gemini, Mistral).
+2. Use provider-specific clients with per-provider API keys in environment config.
+3. Normalize request/response shapes (streaming + non-streaming) into a single MCP response.
+4. Apply rate limits, retries, and timeouts consistently.
+5. Track cost/tokens in Analytics + D1 and update budgets with final usage.
+
 ## License
 
 MIT

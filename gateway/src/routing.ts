@@ -18,6 +18,8 @@ export interface RoutingResult {
   rateLimited: boolean
 }
 
+const REQUEST_CACHE_TTL_MS = 5 * 60 * 1000
+
 // Model pricing in cents per 1M tokens
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   'claude-3-opus': { input: 1500, output: 7500 },
@@ -111,6 +113,8 @@ export function getCacheKey(request: ModelRequest): string {
     model: request.model,
     messages: request.messages,
     tools: request.tools,
+    max_tokens: request.max_tokens,
+    stream: request.stream || false,
     temperature: request.temperature || 0,
   }
   return JSON.stringify(normalized)
@@ -144,13 +148,38 @@ export async function routeModelRequest(
   const estimatedOutputTokens = request.max_tokens || 1000
   const estimatedCost = estimateCost(targetModel, inputTokens, estimatedOutputTokens)
   
-  // TODO: Check cache for identical requests
-  const cacheHit = false
+  const cacheKey = getCacheKey(request)
+  const now = Date.now()
+  const cached = await db
+    .prepare('SELECT last_seen_at FROM request_cache WHERE user_id = ? AND cache_key = ?')
+    .bind(userId, cacheKey)
+    .first<{ last_seen_at: number }>()
+  const cacheHit = Boolean(cached && now - cached.last_seen_at < REQUEST_CACHE_TTL_MS)
+
+  await db.prepare(
+    `INSERT INTO request_cache (user_id, cache_key, last_seen_at, hit_count)
+     VALUES (?, ?, ?, 1)
+     ON CONFLICT(user_id, cache_key)
+     DO UPDATE SET last_seen_at = excluded.last_seen_at, hit_count = hit_count + 1`
+  )
+    .bind(userId, cacheKey, now)
+    .run()
+
+  if (Math.random() < 0.05) {
+    // Occasional cleanup to keep cache size bounded without a cron job.
+    await db.prepare(
+      'DELETE FROM request_cache WHERE user_id = ? AND last_seen_at < ?'
+    )
+      .bind(userId, now - REQUEST_CACHE_TTL_MS)
+      .run()
+  }
+
+  const finalEstimatedCost = cacheHit ? 0 : estimatedCost
   
   return {
     targetModel,
     targetEndpoint,
-    estimatedCost,
+    estimatedCost: finalEstimatedCost,
     cacheHit,
     rateLimited: false,
   }

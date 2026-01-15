@@ -3,6 +3,12 @@ compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 pages_build_output_dir = ".vercel/output/static"
 
+# D1 Database binding (shared with gateway)
+[[d1_databases]]
+binding = "DB"
+database_name = "mcp-gateway-db"
+database_id = "e05d0d8f-7ffe-4f7d-9a25-bfc3e813c3ba"
+
 # Custom domain for profiles
 # routes = [
 #   { pattern = "makethe.app", custom_domain = true },

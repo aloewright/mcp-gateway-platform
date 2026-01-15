@@ -25,6 +25,8 @@ type Bindings = {
 type Variables = {
   userId: string | null
   traceCtx: TraceContext
+  mcpServerId: string | null
+  accessUserId: string | null
 }
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -41,6 +43,8 @@ app.use('*', async (c, next) => {
   const traceHeaders = extractTraceHeaders(c.req.raw.headers)
   const traceCtx = createTraceContext(traceHeaders)
   c.set('traceCtx', traceCtx)
+  c.set('mcpServerId', null)
+  c.set('accessUserId', null)
   c.header('traceparent', traceCtx.traceparent)
   await next()
 })
@@ -51,44 +55,246 @@ const authMiddleware = async (c: any, next: () => Promise<void>) => {
   if (!authHeader?.startsWith('Bearer ')) {
     return c.json({ error: 'Unauthorized' }, 401)
   }
-  
+
   const keyPrefix = authHeader.slice(7, 15)
   const keyFull = authHeader.slice(7)
-  
+
   // Hash the key for comparison
   const encoder = new TextEncoder()
   const data = encoder.encode(keyFull)
   const hashBuffer = await crypto.subtle.digest('SHA-256', data)
   const hashArray = Array.from(new Uint8Array(hashBuffer))
-  const keyHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
-  
+  const keyHash = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('')
+
   const result = await c.env.DB.prepare(
     'SELECT user_id FROM api_keys WHERE key_prefix = ? AND key_hash = ?'
-  ).bind(keyPrefix, keyHash).first()
-  
+  )
+    .bind(keyPrefix, keyHash)
+    .first()
+
   if (!result) {
     return c.json({ error: 'Invalid API key' }, 401)
   }
-  
+
   // Update last used
   await c.env.DB.prepare(
     "UPDATE api_keys SET last_used_at = datetime('now') WHERE key_prefix = ? AND key_hash = ?"
-  ).bind(keyPrefix, keyHash).run()
-  
+  )
+    .bind(keyPrefix, keyHash)
+    .run()
+
   c.set('userId', result.user_id as string)
+  await next()
+}
+
+const cloudflareAccessMiddleware = async (c: any, next: () => Promise<void>) => {
+  const emailHeader = c.req.header('CF-Access-Authenticated-User-Email')
+  if (!emailHeader) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+
+  const email = emailHeader.trim().toLowerCase()
+  if (!email || !email.includes('@')) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+
+  const user = await c.env.DB.prepare('SELECT id FROM users WHERE lower(email) = lower(?)')
+    .bind(email)
+    .first()
+
+  if (!user || !(user as any).id) {
+    return c.json({ error: 'User not found' }, 404)
+  }
+
+  c.set('accessUserId', (user as any).id)
   await next()
 }
 
 // Health check
 app.get('/', (c) => {
-  return c.json({ 
-    status: 'ok', 
+  const accept = c.req.header('Accept') || ''
+  if (accept.includes('text/html')) {
+    return c.redirect('https://makethe.app/docs', 302)
+  }
+
+  return c.json({
+    status: 'ok',
     service: 'mcp-gateway',
-    version: '1.0.0'
+    version: '1.0.0',
   })
 })
 
 app.get('/health', (c) => c.json({ status: 'healthy' }))
+
+// Basic upstream connectivity test for a registered MCP server.
+// Protected by Cloudflare Access.
+app.get('/mcp/:slug/test', cloudflareAccessMiddleware, async (c) => {
+  const slug = sanitizeSlug(c.req.param('slug'))
+  const accessUserId = c.get('accessUserId')
+
+  const server = await getMcpServerBySlug(slug, c.env)
+  if (!server || server.user_id !== accessUserId) {
+    return c.json({ ok: false, error: 'MCP server not found' }, 404)
+  }
+
+  if (!server.enabled) {
+    return c.json({ ok: false, error: 'MCP server disabled' }, 403)
+  }
+
+  const upstream = normalizeBaseUrl(server.upstream_base_url)
+  const id = crypto.randomUUID()
+
+  const startedAt = Date.now()
+  let status: number | null = null
+  let jsonrpcOk = false
+  let toolCount: number | null = null
+  let error: string | null = null
+
+  try {
+    const res = await fetch(`${upstream}/message`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id,
+        method: 'tools/list',
+        params: {},
+      }),
+    })
+
+    status = res.status
+    const text = await res.text()
+
+    let parsed: any = null
+    try {
+      parsed = text ? JSON.parse(text) : null
+    } catch {
+      parsed = null
+    }
+
+    jsonrpcOk = Boolean(parsed && parsed.jsonrpc === '2.0')
+
+    if (parsed?.error) {
+      error = typeof parsed.error?.message === 'string' ? parsed.error.message : 'Upstream error'
+    } else if (Array.isArray(parsed?.result?.tools)) {
+      toolCount = parsed.result.tools.length
+    } else if (!res.ok) {
+      error = `Upstream error (${res.status})`
+    }
+  } catch (err) {
+    error = err instanceof Error ? err.message : 'Upstream request failed'
+  }
+
+  const durationMs = Date.now() - startedAt
+
+  return c.json({
+    ok: !error && status !== null && status >= 200 && status < 300 && jsonrpcOk,
+    slug: server.slug,
+    upstream: server.upstream_base_url,
+    status,
+    jsonrpcOk,
+    toolCount,
+    durationMs,
+    error,
+  })
+})
+
+// Public: private beta access requests
+app.post('/v1/waitlist', async (c) => {
+  let body: unknown
+  try {
+    body = await c.req.json()
+  } catch {
+    body = null
+  }
+
+  const email = (body as any)?.email
+  const source = (body as any)?.source
+
+  if (typeof email !== 'string') {
+    return c.json({ error: 'Email is required' }, 400)
+  }
+
+  const normalized = email.trim().toLowerCase()
+  if (!normalized || normalized.length > 320 || !normalized.includes('@')) {
+    return c.json({ error: 'Invalid email' }, 400)
+  }
+
+  await c.env.DB.prepare(
+    'INSERT OR IGNORE INTO waitlist (id, email, source) VALUES (?, ?, ?)'
+  )
+    .bind(crypto.randomUUID(), normalized, typeof source === 'string' ? source : null)
+    .run()
+
+  return c.json({ ok: true })
+})
+
+// ============ MCP Server URLs (makethe.app) ============
+
+function sanitizeSlug(input: string) {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '')
+}
+
+// Cloudflare Access-protected MCP endpoint
+// GET /mcp/:slug/sse opens SSE and returns /mcp/:slug/message endpoint
+app.get('/mcp/:slug/sse', cloudflareAccessMiddleware, async (c) => {
+  const slug = sanitizeSlug(c.req.param('slug'))
+
+  const server = await c.env.DB.prepare(
+    'SELECT id, user_id, enabled FROM mcp_servers WHERE slug = ?'
+  )
+    .bind(slug)
+    .first()
+
+  if (!server || !(server as any).id) {
+    return c.json({ error: 'MCP server not found' }, 404)
+  }
+
+  if (!(server as any).enabled) {
+    return c.json({ error: 'MCP server disabled' }, 403)
+  }
+
+  if ((server as any).user_id !== c.get('accessUserId')) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
+
+  c.set('mcpServerId', (server as any).id as string)
+  return app.fetch(c.req.raw, c.env)
+})
+
+// Cloudflare Access-protected message endpoint
+app.post('/mcp/:serverId/message', cloudflareAccessMiddleware, async (c) => {
+  const serverId = c.req.param('serverId')
+
+  const server = await c.env.DB.prepare(
+    'SELECT id, user_id, enabled FROM mcp_servers WHERE id = ?'
+  )
+    .bind(serverId)
+    .first()
+
+  if (!server || !(server as any).id) {
+    return c.json({ error: 'MCP server not found' }, 404)
+  }
+
+  if (!(server as any).enabled) {
+    return c.json({ error: 'MCP server disabled' }, 403)
+  }
+
+  if ((server as any).user_id !== c.get('accessUserId')) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
+
+  c.set('mcpServerId', (server as any).id as string)
+  return app.fetch(c.req.raw, c.env)
+})
 
 // ============ MCP SSE Transport ============
 
@@ -99,8 +305,14 @@ const sseConnections = new Map<string, {
 }>()
 
 // SSE endpoint - establishes connection and sends endpoint info
+//
+// Supports both:
+// - Public gateway SSE:   GET /sse?api_key=mk_...
+// - Per-server SSE URL:   GET /mcp/:slug/sse (Cloudflare Access protected)
 app.get('/sse', async (c) => {
+
   // Auth via query param for SSE (can't use headers easily)
+  // For Cloudflare Access protected per-server SSE, use /mcp/:slug/sse.
   const apiKey = c.req.query('api_key')
   if (!apiKey) {
     return c.json({ error: 'API key required as query parameter' }, 401)
@@ -126,11 +338,16 @@ app.get('/sse', async (c) => {
 
   return streamSSE(c, async (stream) => {
     // Send endpoint message first
+    const mcpServerId = c.get('mcpServerId')
+    const messageEndpoint = mcpServerId
+      ? `https://api.makethe.app/mcp/${mcpServerId}/message?session_id=${sessionId}`
+      : `https://api.makethe.app/message?session_id=${sessionId}`
+
     const endpointMsg = {
       jsonrpc: '2.0',
       method: 'endpoint',
       params: {
-        endpoint: `https://api.makethe.app/message?session_id=${sessionId}`,
+        endpoint: messageEndpoint,
       },
     }
     await stream.writeSSE({ data: JSON.stringify(endpointMsg) })
@@ -164,6 +381,10 @@ app.get('/sse', async (c) => {
 })
 
 // Message endpoint - receives JSON-RPC messages from client
+//
+// Supports both:
+// - Public gateway: POST /message?session_id=...
+// - Per-server:     POST /mcp/:slug/message?session_id=...
 app.post('/message', async (c) => {
   const sessionId = c.req.query('session_id')
   if (!sessionId) {
@@ -177,6 +398,14 @@ app.post('/message', async (c) => {
 
   const message = await c.req.json() as MCPMessage
   const { userId, sendMessage } = connection
+  const mcpServerId = c.get('mcpServerId')
+
+  if (mcpServerId) {
+    const accessUserId = c.get('accessUserId')
+    if (!accessUserId || accessUserId !== userId) {
+      return c.json({ error: 'Forbidden' }, 403)
+    }
+  }
 
   try {
     let response: MCPMessage
@@ -190,15 +419,27 @@ app.post('/message', async (c) => {
         // No response needed for notification
         return c.json({ ok: true })
 
-      case 'tools/list':
-        response = createToolsListResponse(message.id!)
-        break
+       case 'tools/list':
+         if (mcpServerId) {
+           response = await proxyMcpRequest(mcpServerId, userId, message, c.env)
+         } else {
+           response = createToolsListResponse(message.id!)
+         }
+         break
 
-      case 'tools/call':
-        const toolName = (message.params as any)?.name
-        const toolArgs = (message.params as any)?.arguments || {}
-        response = await handleToolCall(userId, toolName, toolArgs, message.id!, c.env)
-        break
+
+       case 'tools/call': {
+         if (mcpServerId) {
+           response = await proxyMcpRequest(mcpServerId, userId, message, c.env)
+           break
+         }
+
+         const toolName = (message.params as any)?.name
+         const toolArgs = (message.params as any)?.arguments || {}
+         response = await handleToolCall(userId, toolName, toolArgs, message.id!, c.env)
+         break
+       }
+
 
       case 'ping':
         response = { jsonrpc: '2.0', id: message.id, result: {} }
@@ -221,6 +462,86 @@ app.post('/message', async (c) => {
     return c.json({ ok: true })
   }
 })
+
+type McpServerRow = {
+  id: string
+  user_id: string
+  slug: string
+  name: string
+  upstream_base_url: string
+  enabled: number
+}
+
+function normalizeBaseUrl(url: string): string {
+  return url.replace(/\/$/, '')
+}
+
+async function getMcpServerById(serverId: string, env: any): Promise<McpServerRow | null> {
+  const row = await env.DB.prepare(
+    'SELECT id, user_id, slug, name, upstream_base_url, enabled FROM mcp_servers WHERE id = ?'
+  )
+    .bind(serverId)
+    .first()
+
+  return row ? (row as any as McpServerRow) : null
+}
+
+async function getMcpServerBySlug(slug: string, env: any): Promise<McpServerRow | null> {
+  const row = await env.DB.prepare(
+    'SELECT id, user_id, slug, name, upstream_base_url, enabled FROM mcp_servers WHERE slug = ?'
+  )
+    .bind(slug)
+    .first()
+
+  return row ? (row as any as McpServerRow) : null
+}
+
+async function proxyMcpRequest(
+  serverId: string,
+  userId: string,
+  message: MCPMessage,
+  env: any
+): Promise<MCPMessage> {
+  const server = await getMcpServerById(serverId, env)
+  if (!server || server.user_id !== userId || !server.enabled) {
+    return createErrorResponse(message.id ?? null, 404, 'MCP server not found')
+  }
+
+  const upstream = normalizeBaseUrl(server.upstream_base_url)
+
+  const res = await fetch(`${upstream}/message`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify(message),
+  })
+
+  let parsed: unknown
+  const text = await res.text()
+  try {
+    parsed = text ? JSON.parse(text) : null
+  } catch {
+    parsed = null
+  }
+
+  if (!res.ok) {
+    return createErrorResponse(
+      message.id ?? null,
+      res.status,
+      typeof parsed === 'object' && parsed && 'error' in (parsed as any)
+        ? String((parsed as any).error)
+        : `Upstream error (${res.status})`
+    )
+  }
+
+  if (parsed && typeof parsed === 'object' && (parsed as any).jsonrpc === '2.0') {
+    return parsed as MCPMessage
+  }
+
+  return createErrorResponse(message.id ?? null, -32603, 'Invalid upstream MCP response')
+}
 
 // Handle tool calls
 async function handleToolCall(
@@ -342,57 +663,147 @@ async function handleToolCall(
 // ============ MCP Gateway Routes ============
 
 // Proxy MCP requests with tracing and routing
+//
+// Mixed-mode behavior:
+// - If `:tool` matches a gateway tool, execute it against the gateway DB.
+// - Otherwise, treat this as an LLM request and return routing metadata
+//   (until provider proxying is implemented).
 app.post('/v1/mcp/:tool', authMiddleware, async (c) => {
   const startTime = Date.now()
   const tool = c.req.param('tool')
   const userId = c.get('userId')!
   const traceCtx = c.get('traceCtx')
-  
+
+  const isGatewayTool = GATEWAY_TOOLS.some((t) => t.name === tool)
+
   try {
-    const body = await c.req.json() as ModelRequest
-    
+    const body = await c.req.json()
+
+    if (isGatewayTool) {
+      const mcpResponse = await handleToolCall(userId, tool, body as Record<string, unknown>, crypto.randomUUID(), c.env)
+      const duration = Date.now() - startTime
+
+      writeAnalyticsEvent(c.env.ANALYTICS, {
+        traceId: traceCtx.traceId,
+        userId,
+        tool,
+        model: 'gateway',
+        tokensIn: typeof body === 'string' ? body.length : JSON.stringify(body).length,
+        tokensOut: JSON.stringify(mcpResponse).length,
+        durationMs: duration,
+        status: 'success',
+      })
+
+      await c.env.TRACES.put(
+        `traces/${userId}/${traceCtx.traceId}.json`,
+        JSON.stringify({
+          ...traceCtx,
+          kind: 'gateway_tool',
+          tool,
+          request: body,
+          response: mcpResponse,
+          duration,
+          timestamp: new Date().toISOString(),
+        })
+      )
+
+      await c.env.DB.prepare(
+        'INSERT INTO traces (id, user_id, trace_id, tool_name, model, tokens_in, tokens_out, duration_ms, cost_cents, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      )
+        .bind(
+          crypto.randomUUID(),
+          userId,
+          traceCtx.traceId,
+          tool,
+          'gateway',
+          typeof body === 'string' ? body.length : JSON.stringify(body).length,
+          JSON.stringify(mcpResponse).length,
+          duration,
+          0,
+          'success'
+        )
+        .run()
+
+      return c.json(mcpResponse)
+    }
+
+    const modelRequest = body as ModelRequest
+
     // Route to appropriate model/endpoint
-    const routingResult = await routeModelRequest(body, userId, c.env.DB)
-    
-    // TODO: Actually proxy to MCP server here
-    // For now, return mock response
+    const routingResult = await routeModelRequest(modelRequest, userId, c.env.DB)
+
+    // Not yet proxying to providers; return routing metadata for now.
     const response = {
       id: crypto.randomUUID(),
       tool,
-      result: routingResult,
+      routing: routingResult,
       trace_id: traceCtx.traceId,
+      note: 'Provider proxying not enabled yet; this is routing metadata only.',
     }
-    
+
     const duration = Date.now() - startTime
-    
-    // Write analytics
+    const analyticsStatus = routingResult.rateLimited
+      ? 'error'
+      : routingResult.cacheHit
+        ? 'cached'
+        : 'success'
+
     writeAnalyticsEvent(c.env.ANALYTICS, {
       traceId: traceCtx.traceId,
       userId,
       tool,
-      model: body.model || 'default',
-      tokensIn: body.messages?.reduce((acc: number, m: any) => acc + (m.content?.length || 0), 0) || 0,
+      model: modelRequest.model || 'default',
+      tokensIn:
+        modelRequest.messages?.reduce((acc: number, m: any) => acc + (m.content?.length || 0), 0) ||
+        0,
       tokensOut: JSON.stringify(response).length,
       durationMs: duration,
-      status: 'success',
+      status: analyticsStatus,
+      costCents: routingResult.estimatedCost,
     })
-    
+
     // Store trace in R2 for long-term storage
     await c.env.TRACES.put(
       `traces/${userId}/${traceCtx.traceId}.json`,
       JSON.stringify({
         ...traceCtx,
-        request: body,
+        kind: 'model_route',
+        request: modelRequest,
         response,
         duration,
         timestamp: new Date().toISOString(),
       })
     )
-    
-    return c.json(response)
+
+    await c.env.DB.prepare(
+      'INSERT INTO traces (id, user_id, trace_id, tool_name, model, tokens_in, tokens_out, duration_ms, cost_cents, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    )
+      .bind(
+        crypto.randomUUID(),
+        userId,
+        traceCtx.traceId,
+        tool,
+        routingResult.targetModel,
+        modelRequest.messages?.reduce((acc: number, m: any) => acc + (m.content?.length || 0), 0) || 0,
+        JSON.stringify(response).length,
+        duration,
+        routingResult.estimatedCost,
+        routingResult.rateLimited ? 'rate_limited' : routingResult.cacheHit ? 'cached' : 'success'
+      )
+      .run()
+
+    if (!routingResult.rateLimited && !routingResult.cacheHit && routingResult.estimatedCost > 0) {
+      await c.env.DB.prepare(
+        "UPDATE cost_budgets SET current_usage_cents = current_usage_cents + ?, updated_at = datetime('now') WHERE user_id = ?"
+      )
+        .bind(routingResult.estimatedCost, userId)
+        .run()
+    }
+
+    return c.json(response, routingResult.rateLimited ? 429 : 200)
   } catch (error) {
     const duration = Date.now() - startTime
-    
+
     writeAnalyticsEvent(c.env.ANALYTICS, {
       traceId: traceCtx.traceId,
       userId: userId || 'anonymous',
@@ -403,8 +814,14 @@ app.post('/v1/mcp/:tool', authMiddleware, async (c) => {
       durationMs: duration,
       status: 'error',
     })
-    
-    return c.json({ error: 'Internal server error', trace_id: traceCtx.traceId }, 500)
+
+    return c.json(
+      {
+        error: error instanceof Error ? error.message : 'Internal server error',
+        trace_id: traceCtx.traceId,
+      },
+      500
+    )
   }
 })
 

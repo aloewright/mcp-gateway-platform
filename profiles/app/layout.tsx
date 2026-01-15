@@ -28,8 +28,11 @@ export default function RootLayout({
                   <a href="/docs" className="text-gray-600 hover:text-gray-900">
                     Docs
                   </a>
+                  <a href="/sign-in" className="text-gray-600 hover:text-gray-900">
+                    Sign in
+                  </a>
                   <a
-                    href="https://api.makethe.app"
+                    href="/sign-up"
                     className="bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700"
                   >
                     Get Started
@@ -59,7 +62,7 @@ export default function RootLayout({
                 <div>
                   <h4 className="font-medium text-gray-900">Legal</h4>
                   <ul className="mt-2 space-y-2 text-sm text-gray-600">
-                    <li><a href="/terms">Terms & Conditions</a></li>
+                    <li><a href="/tos">Terms of Service</a></li>
                     <li><a href="/privacy">Privacy Policy</a></li>
                     <li><a href="/cookies">Cookie Policy</a></li>
                   </ul>
